@@ -17,9 +17,9 @@ using Microsoft.Extensions.Configuration;
 
 class Program
 {
-    private static SemaphoreSlim RateLimiter;
+    private static SemaphoreSlim? RateLimiter;
     private static TimeSpan RateLimitInterval;
-    private static ThreadSafeLogger logger;
+    private static ThreadSafeLogger? logger;
 
     static async Task Main(string[] args)
     {
@@ -42,6 +42,8 @@ class Program
         int retryDelayMilliseconds = config.GetValue<int>("RetryDelayMilliseconds");
         int requestsPerSecond = config.GetValue<int>("RateLimiting:RequestsPerSecond");
         int intervalSeconds = config.GetValue<int>("RateLimiting:IntervalSeconds");
+
+        int maxConcurrentTasks = config.GetValue<int>("MaxConcurrentTasks", 1); // Default to 1 if not specified
 
         RateLimiter = new SemaphoreSlim(requestsPerSecond, requestsPerSecond);
         RateLimitInterval = TimeSpan.FromSeconds(intervalSeconds);
@@ -71,13 +73,7 @@ class Program
         {
             logger.Log(LogLevel.Information, $"CryptoCandleDataToCSV started at: {startTime}");
 
-            foreach (var productId in productIds)
-            {
-                foreach (var granularity in granularities)
-                {
-                    await ProcessProductGranularity(productId, granularity, start, end, folderPath, batchSize, maxRetryAttempts, retryDelayMilliseconds, coinbaseClient);
-                }
-            }
+            await ProcessGranularities(granularities, productIds, start, end, folderPath, batchSize, maxRetryAttempts, retryDelayMilliseconds, coinbaseClient, maxConcurrentTasks);
 
             logger.Log(LogLevel.Information, $"Application completed at: {DateTime.Now}");
         }
@@ -85,6 +81,38 @@ class Program
         {
             await logger.FlushAndStop();
         }
+    }
+
+    static async Task ProcessGranularities(Granularity[] granularities, string[] productIds, DateTimeOffset start, DateTimeOffset end, string folderPath, int batchSize, int maxRetryAttempts, int retryDelayMilliseconds, CoinbasePublicClient coinbaseClient, int maxConcurrentTasks)
+    {
+        foreach (var granularity in granularities)
+        {
+            await ProcessGranularityAllProducts(granularity, productIds, start, end, folderPath, batchSize, maxRetryAttempts, retryDelayMilliseconds, coinbaseClient, maxConcurrentTasks);
+        }
+    }
+
+    static async Task ProcessGranularityAllProducts(Granularity granularity, string[] productIds, DateTimeOffset start, DateTimeOffset end, string folderPath, int batchSize, int maxRetryAttempts, int retryDelayMilliseconds, CoinbasePublicClient coinbaseClient, int maxConcurrentTasks)
+    {
+        var semaphore = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
+        var tasks = new List<Task>();
+
+        foreach (var productId in productIds)
+        {
+            await semaphore.WaitAsync();
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await ProcessProductGranularity(productId, granularity, start, end, folderPath, batchSize, maxRetryAttempts, retryDelayMilliseconds, coinbaseClient);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks);
     }
 
     static async Task ProcessProductGranularity(string productId, Granularity granularity, DateTimeOffset start, DateTimeOffset end, string folderPath, int batchSize, int maxRetryAttempts, int retryDelayMilliseconds, CoinbasePublicClient coinbaseClient)
@@ -106,7 +134,7 @@ class Program
         int chunkCount = 0;
         int totalChunks = (int)Math.Ceiling((end - start).TotalDays / GetChunkDays(granularity));
         var progress = new Progress<ProgressReport>(report =>
-            logger.Log(LogLevel.Information, $"Progress: {report.PercentComplete:F2}% - ETA: {report.EstimatedTimeRemaining:hh\\:mm\\:ss}")
+            logger.Log(LogLevel.Information, $"{productId} {granularity} Progress: {report.PercentComplete:F2}% - ETA: {report.EstimatedTimeRemaining:hh\\:mm\\:ss}")
         );
 
         var progressTracker = new ProgressTracker(totalChunks);
@@ -175,7 +203,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    logger.Log(LogLevel.Error, $"Error fetching data for {granularity} (Attempt {attempts}/{maxRetryAttempts}): {ex.Message}");
+                    logger.Log(LogLevel.Error, $"Error fetching data for {productId} {granularity} (Attempt {attempts}/{maxRetryAttempts}): {ex.Message}");
                     if (attempts < maxRetryAttempts)
                     {
                         await Task.Delay(retryDelayMilliseconds);
