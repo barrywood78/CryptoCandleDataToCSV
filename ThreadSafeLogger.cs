@@ -1,6 +1,5 @@
-﻿using System.Collections.Concurrent;
-using SwiftLogger;
-using SwiftLogger.Enums;
+﻿using SwiftLogger.Enums;
+using System.Collections.Concurrent;
 
 public class ThreadSafeLogger
 {
@@ -19,33 +18,47 @@ public class ThreadSafeLogger
 
     public void Log(LogLevel level, string message)
     {
-        _logQueue.Add(new LogMessage { Level = level, Message = message });
+        if (!_cts.IsCancellationRequested)
+        {
+            _logQueue.Add(new LogMessage { Level = level, Message = message ?? string.Empty });
+        }
     }
 
     private async Task ProcessLogQueue()
     {
-        while (!_cts.IsCancellationRequested)
+        try
         {
-            if (_logQueue.TryTake(out var logMessage, Timeout.Infinite, _cts.Token))
+            while (!_cts.Token.IsCancellationRequested || _logQueue.Count > 0)
             {
-                await _logger.Log(logMessage.Level, logMessage.Message);
+                if (_logQueue.TryTake(out var logMessage, 100, _cts.Token))
+                {
+                    await _logger.Log(logMessage.Level, logMessage.Message ?? string.Empty);
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected exception when cancellation is requested, we can safely ignore it
         }
     }
 
     public async Task FlushAndStop()
     {
         _cts.Cancel();
+
+        // Wait for the logging task to complete, with a timeout
+        await Task.WhenAny(_logTask, Task.Delay(5000));
+
+        // Process any remaining messages
         while (_logQueue.TryTake(out var logMessage))
         {
-            await _logger.Log(logMessage.Level, logMessage.Message);
+            await _logger.Log(logMessage.Level, logMessage.Message ?? string.Empty);
         }
-        await _logTask;
     }
 
     private class LogMessage
     {
         public LogLevel Level { get; set; }
-        public string Message { get; set; }
+        public string Message { get; set; } = string.Empty;
     }
 }

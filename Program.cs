@@ -134,7 +134,7 @@ class Program
         int chunkCount = 0;
         int totalChunks = (int)Math.Ceiling((end - start).TotalDays / GetChunkDays(granularity));
         var progress = new Progress<ProgressReport>(report =>
-            logger.Log(LogLevel.Information, $"{productId} {granularity} Progress: {report.PercentComplete:F2}% - ETA: {report.EstimatedTimeRemaining:hh\\:mm\\:ss}")
+            logger?.Log(LogLevel.Information, $"{productId} {granularity} Progress: {report.PercentComplete:F2}% - ETA: {report.EstimatedTimeRemaining:hh\\:mm\\:ss}")
         );
 
         var progressTracker = new ProgressTracker(totalChunks);
@@ -160,9 +160,9 @@ class Program
 
                 try
                 {
-                    logger.Log(LogLevel.Information, $"Processing chunk {chunkCount}/{totalChunks} for {productId} {granularity} ({currentChunkStart:yyyy-MM-dd} to {chunkEnd:yyyy-MM-dd})");
+                    logger?.Log(LogLevel.Information, $"Processing chunk {chunkCount}/{totalChunks} for {productId} {granularity} ({currentChunkStart:yyyy-MM-dd} to {chunkEnd:yyyy-MM-dd})");
 
-                    await RateLimiter.WaitAsync();
+                    await RateLimiter?.WaitAsync()!;
                     try
                     {
                         var candles = await coinbaseClient.Public.GetPublicProductCandlesAsync(productId, startUnix, endUnix, granularity);
@@ -203,14 +203,14 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    logger.Log(LogLevel.Error, $"Error fetching data for {productId} {granularity} (Attempt {attempts}/{maxRetryAttempts}): {ex.Message}");
+                    logger?.Log(LogLevel.Error, $"Error fetching data for {productId} {granularity} (Attempt {attempts}/{maxRetryAttempts}): {ex.Message}");
                     if (attempts < maxRetryAttempts)
                     {
                         await Task.Delay(retryDelayMilliseconds);
                     }
                     else
                     {
-                        logger.Log(LogLevel.Critical, $"Max retry attempts reached for chunk. Moving to next chunk.");
+                        logger?.Log(LogLevel.Critical, $"Max retry attempts reached for chunk. Moving to next chunk.");
                         break;
                     }
                 }
@@ -229,7 +229,7 @@ class Program
 
         await RemoveDuplicatesFromCsvAsync(filePath);
 
-        logger.Log(LogLevel.Information, $"Data exported to CSV file successfully for {productId} {granularity}!");
+        logger?.Log(LogLevel.Information, $"Data exported to CSV file successfully for {productId} {granularity}!");
     }
 
     static async Task WriteBatchToCsvAsync(List<Candle> candleDataList, string filePath)
